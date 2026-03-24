@@ -4,12 +4,18 @@ set -euo pipefail
 export HERMES_HOME="${HERMES_HOME:-/data/.hermes}"
 export HOME="${HOME:-/data}"
 export MESSAGING_CWD="${MESSAGING_CWD:-/data/workspace}"
+export CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"
+export CODEX_CONFIG_DIR="${CODEX_CONFIG_DIR:-${CODEX_HOME}}"
+
+# Restrict permissions for generated runtime files by default.
+umask 077
 
 INIT_MARKER="${HERMES_HOME}/.initialized"
 ENV_FILE="${HERMES_HOME}/.env"
 CONFIG_FILE="${HERMES_HOME}/config.yaml"
+CODEX_AUTH_FILE="${CODEX_HOME}/auth.json"
 
-mkdir -p "${HERMES_HOME}" "${HERMES_HOME}/logs" "${HERMES_HOME}/sessions" "${HERMES_HOME}/cron" "${HERMES_HOME}/pairing" "${MESSAGING_CWD}"
+mkdir -p "${HERMES_HOME}" "${HERMES_HOME}/logs" "${HERMES_HOME}/sessions" "${HERMES_HOME}/cron" "${HERMES_HOME}/pairing" "${MESSAGING_CWD}" "${CODEX_HOME}"
 
 is_true() {
   case "${1:-}" in
@@ -67,18 +73,73 @@ append_if_set() {
   fi
 }
 
+bootstrap_codex_auth() {
+  if is_true "${CODEX_RESET_STATE_ON_BOOT:-}"; then
+    rm -f "${CODEX_AUTH_FILE}"
+    echo "[bootstrap] CODEX_RESET_STATE_ON_BOOT=true; cleared Codex auth state."
+  fi
+
+  if [[ -n "${CODEX_AUTH_JSON_B64:-}" ]]; then
+    local tmp_auth
+    tmp_auth="$(mktemp)"
+
+    if ! printf '%s' "${CODEX_AUTH_JSON_B64}" | base64 -d > "${tmp_auth}" 2>/dev/null; then
+      if ! printf '%s' "${CODEX_AUTH_JSON_B64}" | base64 --decode > "${tmp_auth}" 2>/dev/null; then
+        rm -f "${tmp_auth}"
+        echo "[bootstrap] ERROR: CODEX_AUTH_JSON_B64 is not valid base64." >&2
+        exit 1
+      fi
+    fi
+
+    if ! python3 -m json.tool "${tmp_auth}" >/dev/null 2>&1; then
+      rm -f "${tmp_auth}"
+      echo "[bootstrap] ERROR: CODEX_AUTH_JSON_B64 did not decode to valid JSON." >&2
+      exit 1
+    fi
+
+    mv "${tmp_auth}" "${CODEX_AUTH_FILE}"
+    chmod 600 "${CODEX_AUTH_FILE}"
+    unset CODEX_AUTH_JSON_B64
+    echo "[bootstrap] Installed Codex auth at ${CODEX_AUTH_FILE}."
+    return
+  fi
+
+  if [[ -n "${CODEX_OPENAI_API_KEY:-}" ]]; then
+    CODEX_AUTH_FILE_PATH="${CODEX_AUTH_FILE}" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+auth_file = Path(os.environ["CODEX_AUTH_FILE_PATH"])
+payload = {
+    "OPENAI_API_KEY": os.environ["CODEX_OPENAI_API_KEY"],
+    "auth_mode": "apikey",
+    "last_refresh": None,
+    "tokens": None,
+}
+auth_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PY
+    chmod 600 "${CODEX_AUTH_FILE}"
+    unset CODEX_OPENAI_API_KEY
+    echo "[bootstrap] Wrote Codex API key auth at ${CODEX_AUTH_FILE}."
+  fi
+}
+
 if ! has_valid_provider_config; then
   echo "[bootstrap] ERROR: Configure a provider: OPENROUTER_API_KEY, or OPENAI_BASE_URL+OPENAI_API_KEY, or ANTHROPIC_API_KEY." >&2
   exit 1
 fi
 
 validate_platforms
+bootstrap_codex_auth
 
 echo "[bootstrap] Writing runtime env to ${ENV_FILE}"
 {
   echo "# Managed by entrypoint.sh"
   echo "HERMES_HOME=${HERMES_HOME}"
   echo "MESSAGING_CWD=${MESSAGING_CWD}"
+  echo "CODEX_HOME=${CODEX_HOME}"
+  echo "CODEX_CONFIG_DIR=${CODEX_CONFIG_DIR}"
 } > "$ENV_FILE"
 
 for key in \

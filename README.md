@@ -12,6 +12,7 @@ This template is worker-only: setup and configuration are done through Railway V
 - First-boot bootstrap from environment variables
 - Persistent Hermes state on a Railway volume at `/data`
 - Telegram, Discord, or Slack support (at least one required)
+- Codex CLI available in the container (enabled by default)
 
 ## How it works
 
@@ -33,6 +34,8 @@ Template defaults (already included in `railway.toml`):
 - `HERMES_HOME=/data/.hermes`
 - `HOME=/data`
 - `MESSAGING_CWD=/data/workspace`
+- `CODEX_HOME=/data/.codex`
+- `CODEX_CONFIG_DIR=/data/.codex`
 
 ## Default environment variables
 
@@ -86,6 +89,33 @@ Provider selection tip:
 
 - If you set multiple provider keys, set `HERMES_INFERENCE_PROVIDER` (for example: `openrouter`) to avoid auto-selection surprises.
 
+## Codex auth on Railway
+
+This image installs `@openai/codex` by default so `codex ...` commands can run inside the service.
+
+For non-interactive auth through Railway Variables, set one of these:
+
+- `CODEX_AUTH_JSON_B64` (recommended): base64 of your local `~/.codex/auth.json`
+- `CODEX_OPENAI_API_KEY`: writes API-key auth to `${CODEX_HOME}/auth.json`
+
+Optional control:
+
+- `CODEX_RESET_STATE_ON_BOOT=true` to clear `${CODEX_HOME}/auth.json` before bootstrapping auth
+
+Generate base64 locally:
+
+```bash
+base64 < ~/.codex/auth.json | tr -d '\n'
+```
+
+If OpenAI Codex starts failing with `invalid_workspace_selected` or related `403` errors, run:
+
+```bash
+bash scripts/recover-openai-codex-auth.sh --service hermes-railway-template --environment production
+```
+
+Detailed runbook: [CODEX_AUTH_RECOVERY.md](./CODEX_AUTH_RECOVERY.md)
+
 ## Environment variable reference
 
 For the full and up-to-date list, check out the [Hermes repository](https://github.com/NousResearch/hermes-agent).
@@ -123,6 +153,7 @@ hermes pairing list
 Entrypoint (`scripts/entrypoint.sh`) does the following:
 
 - Validates required provider and platform variables
+- Bootstraps Codex auth from Railway variables when provided
 - Writes runtime env to `${HERMES_HOME}/.env`
 - Creates `${HERMES_HOME}/config.yaml` if missing
 - Persists one-time marker `${HERMES_HOME}/.initialized`
@@ -134,13 +165,14 @@ Entrypoint (`scripts/entrypoint.sh`) does the following:
 - Bot connected but no replies: check allowlist variables and user IDs.
 - Data lost after redeploy: verify Railway volume is mounted at `/data`.
 
-## Build pinning
+## Build pinning and reproducibility
 
 Docker build arg:
 
-- `HERMES_GIT_REF` (default: `main`)
+- `HERMES_GIT_REF` (default: `main`; branch or tag)
+- `HERMES_GIT_SHA` (optional commit SHA; applied after clone)
 
-Override in Railway if you want to pin a tag or commit.
+For reproducible builds, pin both `HERMES_GIT_REF` and `HERMES_GIT_SHA`.
 
 ## Local smoke test
 
