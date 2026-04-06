@@ -73,6 +73,115 @@ append_if_set() {
   fi
 }
 
+infer_provider_from_env() {
+  if [[ -n "${HERMES_INFERENCE_PROVIDER:-}" ]]; then
+    printf '%s\n' "${HERMES_INFERENCE_PROVIDER}"
+    return 0
+  fi
+
+  if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
+    printf '%s\n' "openrouter"
+    return 0
+  fi
+
+  if [[ -n "${OPENAI_BASE_URL:-}" && -n "${OPENAI_API_KEY:-}" ]]; then
+    printf '%s\n' "openai"
+    return 0
+  fi
+
+  if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+    printf '%s\n' "anthropic"
+    return 0
+  fi
+
+  return 1
+}
+
+sync_model_config_from_env() {
+  local desired_provider desired_model desired_base_url
+  desired_provider="$(infer_provider_from_env || true)"
+  desired_model="${LLM_MODEL:-}"
+  desired_base_url=""
+
+  if [[ -z "${desired_provider}" || ! -f "${CONFIG_FILE}" ]]; then
+    return 0
+  fi
+
+  case "${desired_provider}" in
+    openrouter)
+      desired_base_url="https://openrouter.ai/api/v1"
+      if [[ -z "${desired_model}" ]]; then
+        desired_model="qwen/qwen3-coder:free"
+      fi
+      ;;
+    openai)
+      desired_base_url="${OPENAI_BASE_URL:-}"
+      ;;
+    openai-codex)
+      desired_base_url="https://chatgpt.com/backend-api/codex"
+      ;;
+  esac
+
+  CONFIG_FILE_PATH="${CONFIG_FILE}" \
+  DESIRED_PROVIDER="${desired_provider}" \
+  DESIRED_MODEL="${desired_model}" \
+  DESIRED_BASE_URL="${desired_base_url}" \
+  python3 - <<'PY'
+import os
+import sys
+
+try:
+    import yaml
+except ImportError:
+    print("[bootstrap] WARNING: PyYAML not available; skipping persisted model config sync.", file=sys.stderr)
+    raise SystemExit(0)
+
+config_path = os.environ["CONFIG_FILE_PATH"]
+desired_provider = os.environ["DESIRED_PROVIDER"]
+desired_model = os.environ.get("DESIRED_MODEL", "")
+desired_base_url = os.environ.get("DESIRED_BASE_URL", "")
+
+with open(config_path, encoding="utf-8") as fh:
+    config = yaml.safe_load(fh) or {}
+
+model = config.get("model")
+if not isinstance(model, dict):
+    model = {}
+
+changed = False
+previous_provider = model.get("provider")
+
+if previous_provider != desired_provider:
+    model["provider"] = desired_provider
+    changed = True
+
+if desired_model and model.get("default") != desired_model:
+    model["default"] = desired_model
+    changed = True
+elif not desired_model and previous_provider != desired_provider and "default" in model:
+    model.pop("default", None)
+    changed = True
+
+if desired_base_url:
+    if model.get("base_url") != desired_base_url:
+      model["base_url"] = desired_base_url
+      changed = True
+elif "base_url" in model:
+    model.pop("base_url", None)
+    changed = True
+
+if not changed:
+    raise SystemExit(0)
+
+config["model"] = model
+
+with open(config_path, "w", encoding="utf-8") as fh:
+    yaml.safe_dump(config, fh, sort_keys=False)
+
+print(f"[bootstrap] Synced persisted model config to provider={desired_provider}.")
+PY
+}
+
 bootstrap_codex_auth() {
   if is_true "${CODEX_RESET_STATE_ON_BOOT:-}"; then
     rm -f "${CODEX_AUTH_FILE}"
@@ -168,6 +277,8 @@ compression:
   threshold: 0.85
 EOF
 fi
+
+sync_model_config_from_env
 
 if [[ ! -f "$INIT_MARKER" ]]; then
   date -u +"%Y-%m-%dT%H:%M:%SZ" > "$INIT_MARKER"

@@ -47,6 +47,8 @@ TELEGRAM_BOT_TOKEN=""
 TELEGRAM_ALLOWED_USERS=""
 ```
 
+If you use OpenRouter and do not set `LLM_MODEL`, the template defaults Hermes to `qwen/qwen3-coder:free`.
+
 You can add or change variables later in Railway service Variables.
 For the latest supported variables and behavior, follow upstream Hermes documentation:
 
@@ -156,12 +158,15 @@ Entrypoint (`scripts/entrypoint.sh`) does the following:
 - Bootstraps Codex auth from Railway variables when provided
 - Writes runtime env to `${HERMES_HOME}/.env`
 - Creates `${HERMES_HOME}/config.yaml` if missing
+- Re-syncs persisted model provider settings from Railway env on boot
 - Persists one-time marker `${HERMES_HOME}/.initialized`
 - Starts `hermes gateway`
 
 ## Troubleshooting
 
 - `401 Missing Authentication header`: provider/key mismatch (often wrong provider auto-selection or missing API key for selected provider).
+- `HTTP 401: User not found.` with `OPENROUTER_API_KEY` set: persisted Hermes config is likely still pinned to another provider. Ensure `HERMES_INFERENCE_PROVIDER=openrouter` is set and restart on the latest template so boot sync updates `${HERMES_HOME}/config.yaml`.
+- `HTTP 400: No models provided`: set `LLM_MODEL`, or restart on the latest template so OpenRouter defaults to `qwen/qwen3-coder:free`.
 - Bot connected but no replies: check allowlist variables and user IDs.
 - Data lost after redeploy: verify Railway volume is mounted at `/data`.
 
