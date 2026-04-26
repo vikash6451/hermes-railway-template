@@ -95,6 +95,8 @@ Provider selection tip:
 
 This image installs `@openai/codex` by default so `codex ...` commands can run inside the service.
 
+The image currently pins Codex CLI `0.118.0`. If model or provider switching behaves unexpectedly, rebuild/redeploy on the latest template first so the service is not running an older Codex CLI build.
+
 For non-interactive auth through Railway Variables, set one of these:
 
 - `CODEX_AUTH_JSON_B64` (recommended): base64 of your local `~/.codex/auth.json`
@@ -110,13 +112,20 @@ Generate base64 locally:
 base64 < ~/.codex/auth.json | tr -d '\n'
 ```
 
-If OpenAI Codex starts failing with `invalid_workspace_selected` or related `403` errors, run:
+If OpenAI Codex starts failing with `invalid_workspace_selected`, `Codex token refresh failed with status 401`, or related auth errors, run:
 
 ```bash
 bash scripts/recover-openai-codex-auth.sh --service hermes-railway-template --environment production
 ```
 
 Detailed runbook: [CODEX_AUTH_RECOVERY.md](./CODEX_AUTH_RECOVERY.md)
+
+Hermes `openai-codex` boot support:
+
+- If `${CODEX_HOME}/auth.json` already exists with valid Codex ChatGPT tokens, the entrypoint now accepts that as a provider source on boot.
+- If `${HERMES_HOME}/auth.json` already has a valid Hermes `openai-codex` provider session, the entrypoint now accepts that persisted auth as a provider source on boot too.
+- If no other provider env vars are set, the template will infer `HERMES_INFERENCE_PROVIDER=openai-codex` from that persistent auth file and sync `${HERMES_HOME}/config.yaml` accordingly.
+- This supports Hermes `openai-codex` provider mode. It does not replace `OPENAI_API_KEY` for the standard `openai` provider.
 
 ## Environment variable reference
 
@@ -165,8 +174,10 @@ Entrypoint (`scripts/entrypoint.sh`) does the following:
 ## Troubleshooting
 
 - `401 Missing Authentication header`: provider/key mismatch (often wrong provider auto-selection or missing API key for selected provider).
+- `Codex token refresh failed with status 401`: stale Hermes `openai-codex` OAuth state in `${HERMES_HOME}/auth.json`. Re-run the recovery flow in [CODEX_AUTH_RECOVERY.md](./CODEX_AUTH_RECOVERY.md).
 - `HTTP 401: User not found.` with `OPENROUTER_API_KEY` set: persisted Hermes config is likely still pinned to another provider. Ensure `HERMES_INFERENCE_PROVIDER=openrouter` is set and restart on the latest template so boot sync updates `${HERMES_HOME}/config.yaml`.
 - `HTTP 400: No models provided`: set `LLM_MODEL`, or restart on the latest template so OpenRouter defaults to `qwen/qwen3-coder:free`.
+- `/model ... --provider ...` changes the model name but keeps the old provider: this is a Codex CLI issue rather than Hermes bootstrap logic. Rebuild on the latest template first so you pick up the newest pinned Codex CLI.
 - Bot connected but no replies: check allowlist variables and user IDs.
 - Data lost after redeploy: verify Railway volume is mounted at `/data`.
 

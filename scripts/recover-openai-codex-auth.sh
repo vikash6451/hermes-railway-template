@@ -14,6 +14,7 @@ Recover OpenAI Codex auth for Hermes on Railway.
 
 This script is useful when Hermes starts returning:
   invalid_workspace_selected
+  Codex token refresh failed with status 401
 or any stale openai-codex OAuth session errors.
 
 Usage:

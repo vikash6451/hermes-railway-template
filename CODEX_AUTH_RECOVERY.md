@@ -4,6 +4,7 @@ Use this when Telegram/Hermes starts failing with errors like:
 
 - `invalid_workspace_selected`
 - `Error code: 403` from provider `openai-codex`
+- `Codex token refresh failed with status 401`
 
 ## One-command recovery
 
@@ -21,6 +22,8 @@ What it does:
 4. Verifies auth state in `/data/.hermes/auth.json`
 5. Runs a smoke prompt (`reply with OK only`)
 6. Triggers a redeploy so the running gateway uses fresh auth
+
+Note: Hermes provider auth lives in `/data/.hermes/auth.json`. That is the file `hermes status` checks for `openai-codex` login health. `/data/.codex/auth.json` may also exist for the Codex CLI, but it is not enough by itself to fix stale Hermes provider auth.
 
 ## During device login
 

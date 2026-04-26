@@ -14,6 +14,7 @@ INIT_MARKER="${HERMES_HOME}/.initialized"
 ENV_FILE="${HERMES_HOME}/.env"
 CONFIG_FILE="${HERMES_HOME}/config.yaml"
 CODEX_AUTH_FILE="${CODEX_HOME}/auth.json"
+HERMES_AUTH_FILE="${HERMES_HOME}/auth.json"
 
 mkdir -p "${HERMES_HOME}" "${HERMES_HOME}/logs" "${HERMES_HOME}/sessions" "${HERMES_HOME}/cron" "${HERMES_HOME}/pairing" "${MESSAGING_CWD}" "${CODEX_HOME}"
 
@@ -22,6 +23,78 @@ is_true() {
     1|true|TRUE|yes|YES|on|ON) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+has_codex_auth() {
+  if [[ ! -f "${CODEX_AUTH_FILE}" ]]; then
+    return 1
+  fi
+
+  CODEX_AUTH_FILE_PATH="${CODEX_AUTH_FILE}" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["CODEX_AUTH_FILE_PATH"])
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+
+tokens = payload.get("tokens")
+if not isinstance(tokens, dict):
+    raise SystemExit(1)
+
+access_token = str(tokens.get("access_token", "") or "").strip()
+refresh_token = str(tokens.get("refresh_token", "") or "").strip()
+auth_mode = str(payload.get("auth_mode", "") or "").strip()
+
+if auth_mode != "chatgpt":
+    raise SystemExit(1)
+
+if not access_token or not refresh_token:
+    raise SystemExit(1)
+PY
+}
+
+has_hermes_codex_auth() {
+  if [[ ! -f "${HERMES_AUTH_FILE}" ]]; then
+    return 1
+  fi
+
+  HERMES_AUTH_FILE_PATH="${HERMES_AUTH_FILE}" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["HERMES_AUTH_FILE_PATH"])
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+
+providers = payload.get("providers")
+if not isinstance(providers, dict):
+    raise SystemExit(1)
+
+provider = providers.get("openai-codex")
+if not isinstance(provider, dict):
+    raise SystemExit(1)
+
+tokens = provider.get("tokens")
+if not isinstance(tokens, dict):
+    raise SystemExit(1)
+
+access_token = str(tokens.get("access_token", "") or "").strip()
+refresh_token = str(tokens.get("refresh_token", "") or "").strip()
+auth_mode = str(provider.get("auth_mode", "") or "").strip()
+
+if auth_mode != "chatgpt":
+    raise SystemExit(1)
+
+if not access_token or not refresh_token:
+    raise SystemExit(1)
+PY
 }
 
 validate_platforms() {
@@ -50,6 +123,10 @@ validate_platforms() {
 }
 
 has_valid_provider_config() {
+  if [[ -n "${CODEX_AUTH_JSON_B64:-}" || -n "${CODEX_OPENAI_API_KEY:-}" ]]; then
+    return 0
+  fi
+
   if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
     return 0
   fi
@@ -59,6 +136,14 @@ has_valid_provider_config() {
   fi
 
   if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+    return 0
+  fi
+
+  if has_codex_auth; then
+    return 0
+  fi
+
+  if has_hermes_codex_auth; then
     return 0
   fi
 
@@ -91,6 +176,21 @@ infer_provider_from_env() {
 
   if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
     printf '%s\n' "anthropic"
+    return 0
+  fi
+
+  if [[ -n "${CODEX_AUTH_JSON_B64:-}" || -n "${CODEX_OPENAI_API_KEY:-}" ]]; then
+    printf '%s\n' "openai-codex"
+    return 0
+  fi
+
+  if has_codex_auth; then
+    printf '%s\n' "openai-codex"
+    return 0
+  fi
+
+  if has_hermes_codex_auth; then
+    printf '%s\n' "openai-codex"
     return 0
   fi
 
@@ -141,6 +241,14 @@ desired_provider = os.environ["DESIRED_PROVIDER"]
 desired_model = os.environ.get("DESIRED_MODEL", "")
 desired_base_url = os.environ.get("DESIRED_BASE_URL", "")
 
+def normalize_codex_model_name(value):
+    if not isinstance(value, str):
+        return value
+    value = value.strip()
+    if value.startswith("codex/"):
+        return value.split("/", 1)[1]
+    return value
+
 with open(config_path, encoding="utf-8") as fh:
     config = yaml.safe_load(fh) or {}
 
@@ -150,10 +258,14 @@ if not isinstance(model, dict):
 
 changed = False
 previous_provider = model.get("provider")
+current_default = model.get("default")
 
 if previous_provider != desired_provider:
     model["provider"] = desired_provider
     changed = True
+
+if desired_provider == "openai-codex":
+    desired_model = normalize_codex_model_name(desired_model)
 
 if desired_model and model.get("default") != desired_model:
     model["default"] = desired_model
@@ -162,6 +274,12 @@ elif not desired_model and previous_provider != desired_provider and "default" i
     model.pop("default", None)
     changed = True
 
+if desired_provider == "openai-codex":
+    normalized_current_default = normalize_codex_model_name(current_default)
+    if normalized_current_default != current_default:
+        model["default"] = normalized_current_default
+        changed = True
+
 if desired_base_url:
     if model.get("base_url") != desired_base_url:
       model["base_url"] = desired_base_url
@@ -169,6 +287,13 @@ if desired_base_url:
 elif "base_url" in model:
     model.pop("base_url", None)
     changed = True
+
+if desired_provider == "openai-codex":
+    # Keep Codex as the only inference route on persisted state unless the
+    # operator explicitly re-adds fallback providers later.
+    if config.get("fallback_providers") != []:
+        config["fallback_providers"] = []
+        changed = True
 
 if not changed:
     raise SystemExit(0)
@@ -235,7 +360,7 @@ PY
 }
 
 if ! has_valid_provider_config; then
-  echo "[bootstrap] ERROR: Configure a provider: OPENROUTER_API_KEY, or OPENAI_BASE_URL+OPENAI_API_KEY, or ANTHROPIC_API_KEY." >&2
+  echo "[bootstrap] ERROR: Configure a provider: OPENROUTER_API_KEY, or OPENAI_BASE_URL+OPENAI_API_KEY, or ANTHROPIC_API_KEY, or a valid Codex auth source (${CODEX_AUTH_FILE}, ${HERMES_AUTH_FILE}, CODEX_AUTH_JSON_B64, or CODEX_OPENAI_API_KEY) for openai-codex." >&2
   exit 1
 fi
 

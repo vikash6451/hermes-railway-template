@@ -28,7 +28,7 @@ RUN pip install --no-cache-dir -e "/opt/hermes-agent[messaging,cron,cli,pty]"
 FROM python:3.11-slim
 
 ARG INSTALL_CODEX_CLI=1
-ARG CODEX_CLI_VERSION=0.116.0
+ARG CODEX_CLI_VERSION=0.118.0
 
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
